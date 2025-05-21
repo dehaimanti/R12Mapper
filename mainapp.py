@@ -58,8 +58,8 @@ if uploaded_file:
 
     if text:
         headers = extract_headers_with_llm(text)
-        st.subheader("🧠 Extracted Column Headers (via GPT)")
-        st.write(headers)
+        ###st.subheader("🧠 Extracted Column Headers (via GPT)")
+        ###st.write(headers)
 
         if headers:
             st.markdown("### ✍️ Provide Hints for Each Label")
@@ -92,9 +92,34 @@ if uploaded_file:
                         user_comment_map,
                         metadata_df=r12_metadata_df
                     )
-                    st.subheader("🔗 Mapped Oracle R12 Table/Column Names")
+                    st.subheader("🔗 Mapped JSON")
                     st.code(mappings, language="json")
+                    st.subheader("🔗 Mapped Oracle R12 Table/Column Names. (Download as csv)")
+
+                    # Parse mappings if it's a JSON string
+                    if isinstance(mappings, str):
+                        try:
+                            mappings_data = json.loads(mappings)
+                        except Exception as e:
+                            st.error(f"❌ Could not parse mappings as JSON. Error: {e}")
+                            mappings_data = []
+                    else:
+                        mappings_data = mappings
+
+                    # Display the mappings in a table with Sr no
+                    if mappings_data:
+                        for idx, entry in enumerate(mappings_data):
+                            entry["Sr no"] = idx + 1
+
+                        # Reorder columns for display
+                        df_display = pd.DataFrame(mappings_data)[["Sr no", "extracted_label", "oracle_r12_table", "oracle_r12_column"]]
+                        st.dataframe(df_display, use_container_width=True)
+                    else:
+                        st.warning("⚠️ No mapping data available.")
+
+
 
                     sql = generate_sql(mappings)
+                    print(sql)
                     st.subheader("📾 Generated SQL Query")
                     st.code(sql, language="sql")

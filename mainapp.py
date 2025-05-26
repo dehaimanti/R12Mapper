@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 import io
+import json
+import tempfile
+import os
 
 from extractors.excel_extractor import extract_text_from_excel
 from extractors.pdf_extractor import extract_text_from_pdf
@@ -8,7 +11,8 @@ from extractors.image_extractor import extract_text_from_image
 from llm_utils.header_extraction import extract_headers_with_llm
 from llm_utils.label_mapping import ask_llm_for_mappings
 from llm_utils.sql_generator import generate_sql
-from clean_metadata_csv import clean_and_load_metadata  # ✅ Import the cleaning function
+from clean_metadata_csv import clean_and_load_metadata
+
 
 st.title("Oracle R12 Label Mapper with GPT + SQL Generator")
 
@@ -21,14 +25,12 @@ if metadata_file is not None:
         decoded = metadata_file.read()
         r12_metadata_df = clean_and_load_metadata(decoded)
 
-        # Validate required columns
         if 'table_name' not in r12_metadata_df.columns or 'column_list' not in r12_metadata_df.columns:
-            raise ValueError(f"❌ Metadata file must contain 'TABLE_NAME' and 'COLUMN_LIST' columns. Got: {r12_metadata_df.columns.tolist()}")
+            raise ValueError(f"❌ Metadata must contain 'TABLE_NAME' and 'COLUMN_LIST'. Found: {r12_metadata_df.columns.tolist()}")
 
         st.sidebar.success("R12 Metadata loaded successfully!")
         st.sidebar.write("📋 Columns loaded:", r12_metadata_df.columns.tolist())
         st.sidebar.dataframe(r12_metadata_df.head())
-
     except Exception as e:
         st.sidebar.error(f"Failed to load metadata CSV: {e}")
 
@@ -58,8 +60,6 @@ if uploaded_file:
 
     if text:
         headers = extract_headers_with_llm(text)
-        ###st.subheader("🧠 Extracted Column Headers (via GPT)")
-        ###st.write(headers)
 
         if headers:
             st.markdown("### ✍️ Provide Hints for Each Label")
@@ -83,43 +83,45 @@ if uploaded_file:
                 user_column_map[label] = cols[3].text_input("Hint R12 Column", key=f"column_{idx}", label_visibility="collapsed")
                 user_comment_map[label] = cols[4].text_input("Comments", key=f"comment_{idx}", label_visibility="collapsed")
 
-            if st.button("Map Labels to Oracle R12"):
+            if "trigger_mapping" not in st.session_state:
+                st.session_state["trigger_mapping"] = False
+
+            if st.button("Map Labels to Oracle R12", key="map_button"):
+                st.session_state["trigger_mapping"] = True
+
+            if st.session_state["trigger_mapping"]:
                 with st.spinner("Querying LLM for mappings..."):
-                    mappings = ask_llm_for_mappings(
-                        headers,
-                        user_table_map,
-                        user_column_map,
-                        user_comment_map,
-                        metadata_df=r12_metadata_df
-                    )
+                    try:
+                        mappings, discarded, table_column_map = ask_llm_for_mappings(
+                            headers,
+                            user_table_map,
+                            user_column_map,
+                            user_comment_map,
+                            metadata_df=r12_metadata_df
+                        )
+                    except Exception as e:
+                        st.error(f"🚨 Error during LLM mapping: {e}")
+                        st.stop()
+
+                    st.session_state["mappings"] = mappings
+
                     st.subheader("🔗 Mapped JSON")
-                    st.code(mappings, language="json")
-                    st.subheader("🔗 Mapped Oracle R12 Table/Column Names. (Download as csv)")
+                    st.code(json.dumps(mappings, indent=2), language="json")
+                    st.subheader("🔗 Mapped Oracle R12 Table/Column Names")
 
-                    # Parse mappings if it's a JSON string
-                    if isinstance(mappings, str):
-                        try:
-                            mappings_data = json.loads(mappings)
-                        except Exception as e:
-                            st.error(f"❌ Could not parse mappings as JSON. Error: {e}")
-                            mappings_data = []
-                    else:
-                        mappings_data = mappings
-
-                    # Display the mappings in a table with Sr no
-                    if mappings_data:
-                        for idx, entry in enumerate(mappings_data):
+                    if mappings:
+                        for idx, entry in enumerate(mappings):
                             entry["Sr no"] = idx + 1
 
-                        # Reorder columns for display
-                        df_display = pd.DataFrame(mappings_data)[["Sr no", "extracted_label", "oracle_r12_table", "oracle_r12_column"]]
+                        df_display = pd.DataFrame(mappings)[["Sr no", "extracted_label", "oracle_r12_table", "oracle_r12_column"]]
                         st.dataframe(df_display, use_container_width=True)
+
+                        if discarded:
+                            st.warning(f"⚠️ {len(discarded)} mapping(s) from LLM were discarded (not found in metadata).")
+                            st.expander("See Discarded Mappings").json(discarded)
                     else:
                         st.warning("⚠️ No mapping data available.")
 
-
-
-                    sql = generate_sql(mappings)
-                    print(sql)
+                    sql = generate_sql(mappings, table_column_map=table_column_map)
                     st.subheader("📾 Generated SQL Query")
                     st.code(sql, language="sql")

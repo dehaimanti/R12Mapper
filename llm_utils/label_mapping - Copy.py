@@ -1,92 +1,196 @@
-import openai
+import time
+import os
 import json
 import ast
-from config import OPENAI_API_KEY
+import pandas as pd
+import requests
+import re
+from dotenv import load_dotenv
 
-openai.api_key = OPENAI_API_KEY
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL")
+
+def safe_groq_chat_completion(model, messages, retries=3, delay=3):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2
+    }
+
+    for i in range(retries):
+        try:
+            print("📩 Sending payload to GROQ API:")
+            print(json.dumps(payload, indent=2))
+
+            response = requests.post(url, headers=headers, json=payload)
+
+            print("📩 GROQ raw response text:")
+            print(response.text)
+
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except Exception as e:
+                    raise ValueError(f"✅ Status 200 but failed to parse JSON: {e}\nRaw: {response.text}")
+            else:
+                print(f"❌ Attempt {i+1}: GROQ error {response.status_code}: {response.text}")
+                if i < retries - 1:
+                    time.sleep(delay)
+                else:
+                    raise RuntimeError(f"GROQ API failed: {response.status_code} - {response.text}")
+        except Exception as ex:
+            print(f"🚨 Exception during GROQ call: {ex}")
+            if i < retries - 1:
+                time.sleep(delay)
+            else:
+                raise RuntimeError(f"❌ GROQ API call failed after {retries} retries: {ex}")
 
 def ask_llm_for_mappings(headers, user_table_map, user_column_map, user_comment_map, metadata_df=None):
-    system_prompt = (
-        "You are an Oracle R12 expert. Map extracted labels to the most likely Oracle R12 table and column.\n"
-        "Return ONLY a JSON array of objects in the following format:\n"
-        "[\n"
-        "  {\n"
-        "    \"extracted_label\": \"label1\",\n"
-        "    \"oracle_r12_table\": \"table_name\",\n"
-        "    \"oracle_r12_column\": \"column_name\"\n"
-        "  },\n"
-        "  ...\n"
-        "]"
-    )
+    validated_mappings = []
+    discarded_llm_items = []
+    metadata_lookup = set()
+    table_column_map = {}
 
-    metadata_mapping = {}
+    print("🧪 Extracted headers:", headers)
+    if not headers:
+        raise ValueError("❌ No headers extracted. Nothing to map.")
+
     if metadata_df is not None:
-        print("📌 Original metadata_df columns:", metadata_df.columns.tolist())
-        metadata_df.columns = [col.strip().lower().replace('"', '') for col in metadata_df.columns]
-        print("🧽 Normalized metadata_df columns:", metadata_df.columns.tolist())
+        try:
+            if isinstance(metadata_df, (bytes, str)):
+                from io import StringIO
+                metadata_df = pd.read_csv(StringIO(metadata_df.decode("utf-8")), sep="|")
+            metadata_df.columns = [col.strip().lower() for col in metadata_df.columns]
+        except Exception as e:
+            raise ValueError(f"❌ Failed to parse metadata CSV: {e}")
 
-        if 'table_name' in metadata_df.columns and 'column_list' in metadata_df.columns:
-            print("✅ Using TABLE_NAME and COLUMN_LIST-based metadata parsing")
-            for _, row in metadata_df.iterrows():
-                table = str(row['table_name']).strip()
-                columns = str(row['column_list']).split(',')
-                for col in columns:
-                    extracted_label = col.strip().lower()
-                    metadata_mapping[extracted_label] = {
-                        "table": table,
-                        "column": col.strip()
-                    }
-        else:
-            raise ValueError(f"❌ Metadata file must contain 'TABLE_NAME' and 'COLUMN_LIST' columns. Got: {metadata_df.columns.tolist()}")
-
-    user_entries = []
-    for label in headers:
-        lower_label = label.lower()
-        metadata_hint = metadata_mapping.get(lower_label, {})
-        entry = {
+    user_entries = [
+        {
             "extracted_label": label,
-            "hint_table": user_table_map.get(label, "") or metadata_hint.get("table", ""),
-            "hint_column": user_column_map.get(label, "") or metadata_hint.get("column", ""),
+            "hint_table": user_table_map.get(label, ""),
+            "hint_column": user_column_map.get(label, ""),
             "comment": user_comment_map.get(label, "")
         }
-        user_entries.append(entry)
+        for label in headers
+    ]
 
-    user_prompt = (
-        "Map these extracted labels to Oracle R12 tables and columns.\n"
-        "Respond ONLY with a JSON array of objects with this format:\n"
-        "[\n"
-        "  {\n"
-        "    \"extracted_label\": \"label1\",\n"
-        "    \"oracle_r12_table\": \"table_name\",\n"
-        "    \"oracle_r12_column\": \"column_name\"\n"
-        "  }\n"
-        "]\n\n"
-        f"Here are the label hints:\n{json.dumps(user_entries, indent=2)}"
+    print("🧪 Sending user entries to GROQ (table guessing):")
+    print(json.dumps(user_entries, indent=2))
+
+    # STEP 1: Ask LLM for likely R12 table names
+    system_prompt_step1 = (
+        "You are an Oracle R12 expert. For each label, guess the most likely Oracle R12 TABLE name "
+        "based on label text and hints. Do NOT guess columns. Format:\n"
+        "[{\"extracted_label\": \"label1\", \"oracle_r12_table\": \"TABLE_NAME\"}]"
     )
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
+    response1 = safe_groq_chat_completion(
+        model=GROQ_MODEL,
         messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.3
+            {"role": "system", "content": system_prompt_step1},
+            {"role": "user", "content": f"Labels and hints:\n{json.dumps(user_entries, indent=2)}"}
+        ]
     )
 
-    response_text = response['choices'][0]['message']['content']
+    content1 = response1["choices"][0]["message"]["content"].strip()
+    print("📨 Raw LLM Response (table guessing):")
+    print(content1)
 
-    # Try to parse JSON directly
+    if not content1:
+        raise ValueError("❌ First LLM response (table guess) was empty.")
+
     try:
-        response_json = json.loads(response_text)
-    except json.JSONDecodeError:
-        try:
-            response_json = ast.literal_eval(response_text)
-        except Exception as e:
-            raise ValueError(f"❌ Failed to parse LLM response as JSON. Response was:\n{response_text}\nError: {e}")
+        json_match = re.search(r"\[\s*{.*?}\s*\]", content1, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"❌ Couldn't extract a JSON array from LLM response:\n\n{content1}")
+        cleaned_json = json_match.group(0)
+        guessed_table_mappings = json.loads(cleaned_json)
+    except Exception as e:
+        raise ValueError(f"❌ Failed to parse table guesses:\n\n{content1}\n\nError: {e}")
 
-    # Validate structure
-    for entry in response_json:
-        if not all(key in entry for key in ("extracted_label", "oracle_r12_table", "oracle_r12_column")):
-            raise ValueError(f"❌ Each mapping must contain 'extracted_label', 'oracle_r12_table', and 'oracle_r12_column'. Got:\n{entry}")
+    guessed_tables = {entry["oracle_r12_table"].strip().upper() for entry in guessed_table_mappings if entry.get("oracle_r12_table")}
 
-    return response_json
+    filtered_metadata = metadata_df[
+        metadata_df['table_name'].str.upper().isin(guessed_tables)
+    ] if metadata_df is not None else None
+
+    if filtered_metadata is not None:
+        for _, row in filtered_metadata.iterrows():
+            table = row['table_name'].strip().upper()
+            columns = [col.strip().upper() for col in str(row['column_list']).split(',')]
+            for col in columns:
+                metadata_lookup.add((table, col))
+                table_column_map.setdefault(table, set()).add(col)
+
+    metadata_map = {tbl: list(cols) for tbl, cols in table_column_map.items()}
+
+    # STEP 2: Ask LLM for full mapping now with metadata
+    system_prompt_step2 = (
+        "You are an Oracle R12 expert. Using the metadata and hints, map each label to the correct Oracle R12 TABLE and COLUMN.\n"
+        "Only use from these tables and columns:\n"
+        f"{json.dumps(metadata_map, indent=2)}\n\n"
+        "Return ONLY a JSON array like this:\n"
+        "[{\"extracted_label\": \"label1\", \"oracle_r12_table\": \"TABLE_NAME\", \"oracle_r12_column\": \"COLUMN_NAME\"}]"
+    )
+
+    response2 = safe_groq_chat_completion(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt_step2},
+            {"role": "user", "content": json.dumps(user_entries, indent=2)}
+        ]
+    )
+
+    raw_content = response2["choices"][0]["message"]["content"].strip()
+    print("📨 Raw LLM Response (final mapping):")
+    print(raw_content)
+
+    if not raw_content:
+        raise ValueError("❌ Final LLM mapping response was empty.")
+
+    try:
+        json_match = re.search(r"\[\s*{.*?}\s*\]", raw_content, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"❌ Couldn't extract a valid JSON array:\n\n{raw_content}")
+        clean_json = json_match.group(0)
+        llm_mappings = json.loads(clean_json)
+    except Exception as e:
+        raise ValueError(f"❌ Failed to parse final LLM mapping response:\n\n{raw_content}\n\nError: {e}")
+
+    for item in llm_mappings:
+        label = item.get("extracted_label", "")
+        llm_table = item.get("oracle_r12_table", "").strip().upper()
+        llm_column = item.get("oracle_r12_column", "").strip().upper()
+
+        # 🔍 Smart match: exact or try _ALL
+        found_match = (llm_table, llm_column) in metadata_lookup
+
+        if not found_match:
+            alt_table = llm_table + "_ALL"
+            if (alt_table, llm_column) in metadata_lookup:
+                print(f"⚠️ Table '{llm_table}' not found, but found fallback '{alt_table}'.")
+                llm_table = alt_table
+                found_match = True
+
+        if found_match:
+            validated_mappings.append({
+                "extracted_label": label,
+                "oracle_r12_table": llm_table,
+                "oracle_r12_column": llm_column
+            })
+        else:
+            validated_mappings.append({
+                "extracted_label": label,
+                "oracle_r12_table": "NOT_FOUND",
+                "oracle_r12_column": "NOT_FOUND"
+            })
+            discarded_llm_items.append(item)
+
+    return validated_mappings, discarded_llm_items, table_column_map

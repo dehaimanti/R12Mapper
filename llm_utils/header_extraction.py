@@ -1,24 +1,54 @@
-import openai
+import os
 import json
-from config import OPENAI_API_KEY
+import requests
+from dotenv import load_dotenv
 
-openai.api_key = OPENAI_API_KEY
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL")
 
 def extract_headers_with_llm(text):
     system_prompt = """
-You are a document analysis expert. Extract only a Python list of column headers from business documents.
-Example: ["Account", "Account #", "Debit", "Credit"]
+You are a document analysis expert. Given a snippet of a business document, extract only a Python list of column headers or labels. 
+Only return valid Python list syntax. No explanations.
+
+Example Input:
+Account Number
+Account Name
+Debit
+Credit
+
+Example Output:
+["Account Number", "Account Name", "Debit", "Credit"]
+
+If the input contains only headers, return them all. If no headers are detected, return an empty list.
 """
     user_prompt = f"Document Text:\n{text.strip()[:5000]}"
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[
+
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": GROQ_MODEL,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.2
-    )
+        "temperature": 0.2
+    }
+
     try:
-        return json.loads(response["choices"][0]["message"]["content"])
-    except Exception:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=data
+        )
+        response.raise_for_status()
+        result = response.json()
+        return json.loads(result["choices"][0]["message"]["content"])
+    except Exception as e:
+        print(f"Error contacting GROQ API: {e}")
         return []

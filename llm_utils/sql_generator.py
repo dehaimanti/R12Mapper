@@ -1,36 +1,49 @@
 import json
-import openai
-from openai.error import ServiceUnavailableError
-from config import OPENAI_API_KEY
+import os
 import ast
 import time
+import requests
+from dotenv import load_dotenv
 
-openai.api_key = OPENAI_API_KEY
+load_dotenv()
 
-def safe_chat_completion_create(*args, retries=3, delay=3, **kwargs):
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL")
+
+def safe_groq_chat_completion(model, messages, retries=3, delay=3):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer " + GROQ_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2
+    }
+
     for i in range(retries):
-        try:
-            return openai.ChatCompletion.create(*args, **kwargs)
-        except ServiceUnavailableError as e:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            return response.json()
+        else:
             if i < retries - 1:
                 time.sleep(delay)
             else:
-                raise e
+                raise RuntimeError(f"GROQ API Error {response.status_code}: {response.text}")
 
 def generate_sql(validated_mappings, table_column_map=None):
     if not validated_mappings:
         return "-- No mappings to generate SQL."
 
-    # Filter out invalid mappings
     valid_items = [
-        m for m in validated_mappings 
+        m for m in validated_mappings
         if m["oracle_r12_table"] != "NOT_FOUND" and m["oracle_r12_column"] != "NOT_FOUND"
     ]
 
     if not valid_items:
         return "-- No valid mappings found for SQL generation."
 
-    # Step 1: Build prompt
     description = []
     for item in valid_items:
         label = item["extracted_label"]
@@ -46,16 +59,13 @@ def generate_sql(validated_mappings, table_column_map=None):
         "Respond ONLY with the SQL query — no explanation."
     )
 
-    # Step 2: Call LLM
-    response = safe_chat_completion_create(
-        model="gpt-4",
+    response = safe_groq_chat_completion(
+        model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": "You are a senior Oracle SQL expert."},
             {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.2
+        ]
     )
 
-    # Step 3: Return generated SQL
     sql = response['choices'][0]['message']['content']
     return sql

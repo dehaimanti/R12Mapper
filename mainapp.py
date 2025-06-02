@@ -30,9 +30,10 @@ def clean_text(text):
     return "\n".join(useful)
 
 st.title("AutoMapper AI for R12 Bi Reports")
+st.info('This is an application that uses OpenAI''s GROQ selected model to read a input report layout, list out the unique columns, find the r12 mapping, SQL query and finally generates the Bi publisher excel Template file')
 
 st.sidebar.markdown("## GROQ Configuration")
-st.sidebar.info('🔑 Don\'t have a GROQ API key? [Click here to create one](https://console.groq.com/keys)', icon="🔗")
+st.sidebar.info("🔑To use this app, you need to provide an OpenAI API key, which you can get [here](https://console.groq.com/keys).")
 
 groq_model = st.sidebar.selectbox("Select GROQ Model", ["llama3-70b-8192","gemma-7b-it", "mixtral-8x7b-32768"])
 groq_api_key = st.sidebar.text_input("Enter GROQ API Key", type="password")

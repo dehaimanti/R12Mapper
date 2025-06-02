@@ -104,7 +104,7 @@ if uploaded_file:
             headers = [
                 "NA", "NA"
             ]
-            st.warning("⚠️ No labels extracted from document. Using default PO-style fallback labels.")
+            st.warning("⚠️ No labels extracted from document. Check the validity of the GROQ API Key.")
 
         st.markdown("### ✍️ Provide Hints for Each Label")
 

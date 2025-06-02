@@ -1,14 +1,7 @@
-import os
 import json
 import requests
-from dotenv import load_dotenv
 
-load_dotenv()
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL")
-
-def extract_headers_with_llm(text):
+def extract_headers_with_llm(text, groq_model, groq_api_key):
     system_prompt = """
 You are a document analysis expert. Given a snippet of a business document, extract only a Python list of column headers or labels. 
 Only return valid Python list syntax. No explanations.
@@ -27,12 +20,12 @@ If the input contains only headers, return them all. If no headers are detected,
     user_prompt = f"Document Text:\n{text.strip()[:5000]}"
 
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {groq_api_key}",
         "Content-Type": "application/json"
     }
 
     data = {
-        "model": GROQ_MODEL,
+        "model": groq_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -50,5 +43,5 @@ If the input contains only headers, return them all. If no headers are detected,
         result = response.json()
         return json.loads(result["choices"][0]["message"]["content"])
     except Exception as e:
-        print(f"Error contacting GROQ API: {e}")
+        print(f"❌ Error contacting GROQ API: {e}")
         return []

@@ -1,19 +1,12 @@
-import json
-import os
-import ast
 import time
+import json
 import requests
-from dotenv import load_dotenv
+import re
 
-load_dotenv()
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL")
-
-def safe_groq_chat_completion(model, messages, retries=3, delay=3):
+def safe_groq_chat_completion(model, api_key, messages, retries=3, delay=3):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer " + GROQ_API_KEY,
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -23,49 +16,51 @@ def safe_groq_chat_completion(model, messages, retries=3, delay=3):
     }
 
     for i in range(retries):
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            return response.json()
-        else:
+        try:
+            print("📤 Sending payload to GROQ API...")
+            response = requests.post(url, headers=headers, json=payload)
+            print("📨 GROQ raw response:")
+            print(response.text)
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"⚠️ Attempt {i+1}: Error {response.status_code}")
+                if i < retries - 1:
+                    time.sleep(delay)
+                else:
+                    raise RuntimeError(f"GROQ API failed: {response.status_code} - {response.text}")
+        except Exception as ex:
+            print(f"❌ Exception: {ex}")
             if i < retries - 1:
                 time.sleep(delay)
             else:
-                raise RuntimeError(f"GROQ API Error {response.status_code}: {response.text}")
+                raise RuntimeError(f"❌ Failed after {retries} retries: {ex}")
 
-def generate_sql(validated_mappings, table_column_map=None):
-    if not validated_mappings:
-        return "-- No mappings to generate SQL."
-
-    valid_items = [
-        m for m in validated_mappings
-        if m["oracle_r12_table"] != "NOT_FOUND" and m["oracle_r12_column"] != "NOT_FOUND"
-    ]
-
-    if not valid_items:
-        return "-- No valid mappings found for SQL generation."
-
-    description = []
-    for item in valid_items:
-        label = item["extracted_label"]
-        table = item["oracle_r12_table"]
-        column = item["oracle_r12_column"]
-        description.append(f'"{label}" => {table}.{column}')
-
-    user_prompt = (
-        "You are an expert Oracle SQL developer. Based on the following mappings of labels to Oracle R12 tables and columns, "
-        "generate a SELECT SQL query that includes smart JOINs, uses table aliases, and makes sure all selected fields are accurate.\n\n"
-        "Mappings:\n" + "\n".join(description) +
-        "\n\nOnly include the tables and columns listed. Do not guess. If a value is NULL, use NULL AS \"Label\".\n"
-        "Respond ONLY with the SQL query — no explanation."
+def generate_sql(mappings, groq_model, groq_api_key, table_column_map=None):
+    prompt = (
+        "You're an Oracle SQL expert. Generate a SELECT SQL statement using the following mappings.\n"
+        "Each mapping includes the target table and column to select. Use proper aliases and joins if needed.\n"
+        "If multiple tables are involved, assume foreign keys exist appropriately.\n\n"
+        "Mappings:\n"
+        f"{json.dumps(mappings, indent=2)}"
     )
 
     response = safe_groq_chat_completion(
-        model=GROQ_MODEL,
+        model=groq_model,
+        api_key=groq_api_key,
         messages=[
-            {"role": "system", "content": "You are a senior Oracle SQL expert."},
-            {"role": "user", "content": user_prompt}
+            {"role": "system", "content": "You are a helpful Oracle SQL query generator."},
+            {"role": "user", "content": prompt}
         ]
     )
 
-    sql = response['choices'][0]['message']['content']
-    return sql
+    try:
+        content = response["choices"][0]["message"]["content"]
+        sql_match = re.search(r"(?i)(select .*?;)", content, re.DOTALL)
+        if sql_match:
+            return sql_match.group(1).strip()
+        else:
+            return content.strip()
+    except Exception as e:
+        raise ValueError(f"❌ Failed to parse SQL from LLM response: {e}\nRaw:\n{response}")

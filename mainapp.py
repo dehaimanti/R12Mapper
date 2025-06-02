@@ -30,7 +30,7 @@ def clean_text(text):
     return "\n".join(useful)
 
 st.title("AutoMapper AI for R12 Bi Reports")
-st.info('This is an application that uses OpenAI''s GROQ selected model to read a input report layout, list out the unique columns, find the r12 mapping, SQL query and finally generates the Bi publisher excel Template file')
+st.info("This is an application that uses OpenAI's GROQ selected model to read a input report layout, list out the unique columns, find the R12 mapping, SQL query and finally generates the Bi publisher excel Template file")
 
 st.sidebar.markdown("## GROQ Configuration")
 st.sidebar.info("🔑To use this app, you need to provide an OpenAI API key, which you can get [here](https://console.groq.com/keys).")
@@ -46,12 +46,8 @@ if groq_model and groq_api_key:
     set_key(dotenv_path, "GROQ_API_KEY", groq_api_key)
     st.sidebar.success("GROQ model and API key saved to .env")
 
-
-
-
-
+# Metadata loading
 st.sidebar.markdown("## R12 Metadata Auto-Loader")
-
 metadata_dir = Path("metadata")
 metadata_files = list(metadata_dir.glob("*.csv"))
 
@@ -75,7 +71,7 @@ if metadata_files:
 else:
     st.sidebar.warning("⚠️ No metadata CSV files found in /metadata/")
 
-
+# File upload
 uploaded_file = st.file_uploader("Upload a document (Excel, PDF, or Image)", type=["xlsx", "xls", "pdf", "png", "jpg", "jpeg"])
 
 if uploaded_file:
@@ -103,12 +99,10 @@ if uploaded_file:
         st.error("Unsupported file format.")
 
     if text:
-        
-        headers = extract_headers_with_llm(text)
+        headers = extract_headers_with_llm(text, groq_model=groq_model, groq_api_key=groq_api_key)
         if not headers:
             headers = [
-                "Purchase Order Number", "Buyer", "Approved Date",
-                "Delivery Date", "Quantity", "Unit Price", "Tax Amount", "Total Amount"
+                "NA", "NA"
             ]
             st.warning("⚠️ No labels extracted from document. Using default PO-style fallback labels.")
 
@@ -143,12 +137,14 @@ if uploaded_file:
             with st.spinner("Querying LLM for mappings..."):
                 try:
                     mappings, discarded, table_column_map = ask_llm_for_mappings(
-                        headers,
-                        user_table_map,
-                        user_column_map,
-                        user_comment_map,
-                        metadata_df=r12_metadata_df
-                    )
+                            headers,
+                            user_table_map,
+                            user_column_map,
+                            user_comment_map,
+                            metadata_df=r12_metadata_df,
+                            groq_model=groq_model,
+                            groq_api_key=groq_api_key
+                        )
                 except requests.exceptions.HTTPError as http_err:
                     if http_err.response.status_code == 429:
                         retry_after = http_err.response.headers.get("Retry-After", "a few")
@@ -179,7 +175,7 @@ if uploaded_file:
                 else:
                     st.warning("⚠️ No mapping data available.")
 
-                sql = generate_sql(mappings, table_column_map=table_column_map)
+                sql = generate_sql(mappings, groq_model=groq_model, groq_api_key=groq_api_key, table_column_map=table_column_map)
                 st.subheader("📾 Generated SQL Query")
                 st.code(sql, language="sql")
 
@@ -204,6 +200,3 @@ if uploaded_file:
                     file_name="template.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-
-
-

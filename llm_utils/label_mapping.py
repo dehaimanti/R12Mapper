@@ -1,21 +1,14 @@
 import time
-import os
 import json
 import ast
 import pandas as pd
 import requests
 import re
-from dotenv import load_dotenv
 
-load_dotenv()
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL")
-
-def safe_groq_chat_completion(model, messages, retries=3, delay=3):
+def safe_groq_chat_completion(model, api_key, messages, retries=3, delay=3):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -51,7 +44,7 @@ def safe_groq_chat_completion(model, messages, retries=3, delay=3):
             else:
                 raise RuntimeError(f"❌ GROQ API call failed after {retries} retries: {ex}")
 
-def ask_llm_for_mappings(headers, user_table_map, user_column_map, user_comment_map, metadata_df=None):
+def ask_llm_for_mappings(headers, user_table_map, user_column_map, user_comment_map, metadata_df=None, groq_model=None, groq_api_key=None):
     validated_mappings = []
     discarded_llm_items = []
     metadata_lookup = set()
@@ -95,7 +88,8 @@ def ask_llm_for_mappings(headers, user_table_map, user_column_map, user_comment_
         )
 
         response = safe_groq_chat_completion(
-            model=GROQ_MODEL,
+            model=groq_model,
+            api_key=groq_api_key,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(entries, indent=2)}
@@ -118,13 +112,11 @@ def ask_llm_for_mappings(headers, user_table_map, user_column_map, user_comment_
 
     llm_mappings = query_llm_for_mappings(user_entries)
 
-    # First pass validation
     for item in llm_mappings:
         label = item.get("extracted_label", "")
         llm_table = item.get("oracle_r12_table", "").strip().upper()
         llm_column = item.get("oracle_r12_column", "").strip().upper()
 
-        # Check original, _ALL, and _B variants and _tl variants
         variants = [llm_table, llm_table + "_ALL", llm_table + "_B", llm_table + "_TL"]
         found_match = False
 
@@ -136,7 +128,6 @@ def ask_llm_for_mappings(headers, user_table_map, user_column_map, user_comment_
                 break
 
         if found_match:
-            print(f"✅ Found Match: {llm_table}.{llm_column}")
             validated_mappings.append({
                 "extracted_label": label,
                 "oracle_r12_table": llm_table,
@@ -144,15 +135,14 @@ def ask_llm_for_mappings(headers, user_table_map, user_column_map, user_comment_
             })
         else:
             discarded_llm_items.append({
-    "extracted_label": label,
-    "oracle_r12_table": llm_table,
-    "oracle_r12_column": llm_column,
-    "hint_table": user_table_map.get(label, ""),
-    "hint_column": user_column_map.get(label, ""),
-    "comment": user_comment_map.get(label, "")
-})
+                "extracted_label": label,
+                "oracle_r12_table": llm_table,
+                "oracle_r12_column": llm_column,
+                "hint_table": user_table_map.get(label, ""),
+                "hint_column": user_column_map.get(label, ""),
+                "comment": user_comment_map.get(label, "")
+            })
 
-    # Retry for discarded items
     discarded_output = []
     if discarded_llm_items:
         print("🗃️ Discarded LLM mappings (unmatched):")
@@ -163,6 +153,5 @@ def ask_llm_for_mappings(headers, user_table_map, user_column_map, user_comment_
                 "oracle_r12_column": item.get("oracle_r12_column", "LLM_NOT_PROVIDED")
             })
         print(json.dumps(discarded_output, indent=2))
-
 
     return validated_mappings, discarded_llm_items, table_column_map
